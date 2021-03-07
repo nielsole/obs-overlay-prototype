@@ -1,9 +1,13 @@
 import argparse
 import csv
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+import pytz
+
+from typing import Optional
 
 import PIL
+import cv2
 import ffmpeg
 
 from PIL import Image, ImageDraw, ImageFont
@@ -118,28 +122,67 @@ def generate_dial(rotation: int) -> Image:
     return gauge
 
 
-def offset_prompt()-> timedelta:
-    print()
-    pass
+def autodetect_time(videofile) -> Optional[datetime]:
+    """
+    Tries to detect a timestamp QR code in the beginning of the video
+    :param videofile:
+    :return:
+    """
+    cap = cv2.VideoCapture(videofile)
+    detector = cv2.QRCodeDetector()
+    currentFrame = 0
+    while currentFrame < 90:
+        # TODO: OpenCV crashes on some videos with SIGSEGV. Maybe we should create a sane file with ffmpeg first and then run on that snippet instead
+        # Capture frame-by-frame
+        ret, frame = cap.read()
+        if not ret:
+            raise Exception("There was a problem reading the videofile during time detection")
+        data, bbox, straight_qrcode = detector.detectAndDecode(frame)
+        print(data)
+        if data != "":
+            return datetime.fromtimestamp(int(data) / 1000, tz=timezone.utc)
+        currentFrame += 1
+    return None
+
+
+def offset_prompt(start_video) -> datetime:
+    print("The videofile and the OBS data need to be exactly aligned.")
+    print(
+        "Please enter the exact time the video started (Leave empty to continue with autodetected video start: {})".format(
+            start_video.strftime("%Y-%M-%D")))
+    timestamp_text = input("Video Start Timestamp(YYYY-MM-DD HH:MM:SS")
+    if timestamp_text == "":
+        return start_video
+    parsed_timestamp = datetime.strptime(timestamp_text, "%Y-%m-%d %H:%M:%S")
+    localized_timestamp = parsed_timestamp.replace(tzinfo=pytz.timezone('Europe/Berlin'))
+    utc_timestamp = pytz.utc.localize(localized_timestamp)
+    return utc_timestamp
+    # TODO parse return value
 
 
 def main():
     parser = argparse.ArgumentParser(description='Overlay Open Bike Sensor data onto video files.')
-    parser.add_argument('-s', '--silent', action='store_true')
-    parser.add_argument('-v', '--videofile', type=str)
-    parser.add_argument('-d', '--datafile', type=str)
+    parser.add_argument('-s', '--silent', action='store_true', help="Makes script noninteractive and disables all input prompts")
+    parser.add_argument('-v', '--videofile', type=str, required=True, help="Path to the videofile")
+    parser.add_argument('-d', '--datafile', type=str, required=True, help="Path to the OBS CSV")
     args = parser.parse_args()
     video_stream, total_length = parse_video(args.videofile)
     config, data = parse_data(args.datafile)
-    start_video : datetime = datetime.strptime(video_stream["tags"]["creation_time"], "%Y-%m-%dT%H:%M:%S.%fZ")
-    # There seems to be a ~7 second difference between the "creation_time" and the actual start time of the video
-    # camera_start_time += timedelta(seconds=7)
-    # Calculated lag of 1:05:04 to 1:05:41
-    # camera_start_time -= timedelta(hours=1, minutes=5, seconds=45, milliseconds=500)
+    start_video: datetime = data[0]["timestamp"]
+    try:
+        start_video = datetime.strptime(video_stream["tags"]["creation_time"], "%Y-%m-%dT%H:%M:%S.%fZ")
+    except KeyError:
+        print("Timestamp could not be extract from Video Metadata")
+
+    autodetected_start_video = autodetect_time(args.videofile)
+    if autodetected_start_video is not None:
+        print("Detected timestamp QR code in the video")
+        start_video = autodetected_start_video
+    else:
+        print("No QR code detected in video")
     if not args.silent:
-        print("The videofile and the OBS data need to be exactly aligned.")
-        offset = offset_prompt(video_stream, total_length, config, data)
-    generate_images(video_stream, data, config)
+        start_video = offset_prompt(start_video)
+    generate_images(video_stream, data, config, start_video)
 
 
 if __name__ == '__main__':
