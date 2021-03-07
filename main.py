@@ -48,16 +48,12 @@ class DrawPositionManager(object):
         return self.x_offset, self.y_offset
 
 
-def generate_images(video_stream, data, config):
+def generate_images(video_stream, data, config, camera_start_time):
     obs_data_offset = 0
     for i in range(int(video_stream["nb_frames"])):
-        # There seems to be a ~7 second difference between the "creation_time" and the actual start time of the video
-        camera_start_time = datetime.strptime(video_stream["tags"]["creation_time"], "%Y-%m-%dT%H:%M:%S.%fZ")
-        camera_start_time += timedelta(seconds=7)
-        # Calculated lag of 1:05:04 to 1:05:41
-        camera_start_time -= timedelta(hours=1, minutes=5, seconds=45, milliseconds=500)
-        # TODO get framerate from camera metadata
-        current_time = camera_start_time + timedelta(seconds=i / (30000 / 1001))
+        # Parse e.g. 30000/1001
+        frames_ticks, frames_base = tuple(map(lambda x: int(x), video_stream["r_frame_rate"].split("/")))
+        current_time = camera_start_time + timedelta(seconds=i * frames_base / frames_ticks)
         # TODO Handle the case where the times don't overlap
         try:
             while current_time > data[obs_data_offset]["timestamp"]:
@@ -89,8 +85,9 @@ def generate_images(video_stream, data, config):
                   fill="white")
         draw.text(dpm.get_pos(), "Confirmed: {}".format(data[obs_data_offset]["Confirmed"]), font=font, fill="white")
         draw.text(dpm.get_pos(), "Marked: {}".format(data[obs_data_offset]["Marked"]), font=font, fill="white")
-        gauge = generate_dial(int(float(data[obs_data_offset]["Speed"]) / 60 * 180))
-        image.paste(gauge, box=(0, image.height - gauge.height))
+        # The gauge was just a proof of concept for a nice graphical interface.
+        # gauge = generate_dial(int(float(data[obs_data_offset]["Speed"]) / 60 * 180))
+        # image.paste(gauge, box=(0, image.height - gauge.height))
         image.save("data/output/frame-{:010d}.png".format(i))
 
 
@@ -105,8 +102,8 @@ def generate_dial(rotation: int) -> Image:
 
     rotation = 90 - rotation  # Factor in the needle graphic pointing to 50 (90 degrees)
 
-    dial: Image = Image.open('needle-self.png')
-    gauge = Image.open('gauge-self.png')
+    dial: Image = Image.open('needle.png')
+    gauge = Image.open('gauge.png')
 
     radius_needle_circle = 25.0
     gauge_offset = 12
@@ -121,15 +118,27 @@ def generate_dial(rotation: int) -> Image:
     return gauge
 
 
+def offset_prompt()-> timedelta:
+    print()
+    pass
+
+
 def main():
     parser = argparse.ArgumentParser(description='Overlay Open Bike Sensor data onto video files.')
     parser.add_argument('-s', '--silent', action='store_true')
     parser.add_argument('-v', '--videofile', type=str)
     parser.add_argument('-d', '--datafile', type=str)
     args = parser.parse_args()
-    print(args.silent)
     video_stream, total_length = parse_video(args.videofile)
     config, data = parse_data(args.datafile)
+    start_video : datetime = datetime.strptime(video_stream["tags"]["creation_time"], "%Y-%m-%dT%H:%M:%S.%fZ")
+    # There seems to be a ~7 second difference between the "creation_time" and the actual start time of the video
+    # camera_start_time += timedelta(seconds=7)
+    # Calculated lag of 1:05:04 to 1:05:41
+    # camera_start_time -= timedelta(hours=1, minutes=5, seconds=45, milliseconds=500)
+    if not args.silent:
+        print("The videofile and the OBS data need to be exactly aligned.")
+        offset = offset_prompt(video_stream, total_length, config, data)
     generate_images(video_stream, data, config)
 
 
